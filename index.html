@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>봄의 제전 - 원시 리듬 타격 게임</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #0d0907;
+            color: #fff;
+            font-family: 'Arial', sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            overflow: hidden;
+            user-select: none;
+        }
+        h2 { 
+            margin: 8px 0; 
+            color: #d35400; 
+            text-shadow: 0 0 12px rgba(211, 84, 0, 0.6); 
+            font-size: 20px;
+        }
+        #gameCanvas {
+            border: 4px solid #8e44ad;
+            background-color: #1a0f0a;
+            box-shadow: 0 0 30px rgba(142, 68, 173, 0.5), inset 0 0 20px rgba(0,0,0,0.8);
+            border-radius: 12px;
+            cursor: pointer;
+            touch-action: none;
+        }
+        #info { 
+            margin-top: 10px; 
+            font-size: 14px; 
+            color: #e67e22; 
+            text-align: center;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+
+    <h2>🎼 봄의 제전: 원시 부족의 의식</h2>
+    <canvas id="gameCanvas" width="360" height="480"></canvas>
+    <div id="info">👇 화면의 음표를 마우스로 직접 클릭(터치)하세요!</div>
+
+<script>
+    const canvas = document.getElementById('gameCanvas');
+    const ctx = canvas.getContext('2d');
+
+    let score = 0;
+    let lives = 5;
+    let notes = [];
+    let particles = [];
+    let flames = [];
+    let gameOver = false;
+    let gameWon = false;
+
+    let audioCtx = null;
+    let bgmTimer = null;
+    let bgmStep = 0;
+
+    // 1. Web Audio API (스트라빈스키 '아구르 화음' & 원시 타악기 BGM)
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            startStravinskyBGM();
+        }
+    }
+
+    function startStravinskyBGM() {
+        if (bgmTimer) return;
+
+        // E Major + Eb7 불협화음 아구르 테마 박자 패턴
+        const augursPattern = [
+            { freqs: [164.81, 207.65, 246.94, 311.13], dur: 0.15, vol: 0.3 }, // 불협 화음 탭
+            { freqs: [65.41], dur: 0.25, vol: 0.5 },                          // 팀파니 베이스
+            { freqs: [164.81, 207.65, 246.94], dur: 0.1, vol: 0.25 },
+            { freqs: [164.81, 207.65, 311.13], dur: 0.15, vol: 0.35 },
+            { freqs: [82.41, 123.47], dur: 0.2, vol: 0.4 },                   // 중음 타악기
+            { freqs: [164.81, 207.65, 246.94, 311.13], dur: 0.1, vol: 0.3 }
+        ];
+
+        function playStep() {
+            if (gameOver || !audioCtx) return;
+            const p = augursPattern[bgmStep % augursPattern.length];
+            
+            p.freqs.forEach(freq => {
+                const osc = audioCtx.createOscillator();
+                const gain = audioCtx.createGain();
+                osc.type = freq < 100 ? 'sine' : 'sawtooth';
+                osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(freq * 0.8, audioCtx.currentTime + p.dur);
+
+                gain.gain.setValueAtTime(p.vol, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + p.dur);
+
+                osc.connect(gain);
+                gain.connect(audioCtx.destination);
+
+                osc.start();
+                osc.stop(audioCtx.currentTime + p.dur);
+            });
+
+            bgmStep++;
+            bgmTimer = setTimeout(playStep, 450); // 편안한 템포
+        }
+
+        playStep();
+    }
+
+    // 2. 효과음 (성공, 미스, 팡파르)
+    function playHitSound() {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(180, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 0.18);
+
+        gain.gain.setValueAtTime(0.7, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.18);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.18);
+    }
+
+    function playMissSound() {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(70, audioCtx.currentTime);
+        osc.frequency.linearRampToValueAtTime(20, audioCtx.currentTime + 0.3);
+
+        gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.3);
+
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.3);
+    }
+
+    function playFanfare() {
+        if (!audioCtx) return;
+        const chord = [261.63, 329.63, 392.00, 523.25, 659.25];
+        chord.forEach((freq, idx) => {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = 'triangle';
+            osc.frequency.value = freq;
+            gain.gain.setValueAtTime(0, audioCtx.currentTime + idx * 0.08);
+            gain.gain.linearRampToValueAtTime(0.3, audioCtx.currentTime + idx * 0.08 + 0.04);
+            gain.gain.exponentialRampToValueAtTime(0.001, audioCtx.currentTime + idx * 0.08 + 0.6);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start(audioCtx.currentTime + idx * 0.08);
+            osc.stop(audioCtx.currentTime + idx * 0.08 + 0.6);
+        });
+    }
+
+    // 3. 파티클 연출 (불꽃 및 타격 폭발)
+    function spawnParticles(x, y) {
+        for (let i = 0; i < 12; i++) {
+            particles.push({
+                x: x,
+                y: y,
+                vx: (Math.random() - 0.5) * 6,
+                vy: (Math.random() - 0.5) * 6,
+                color: ['#e74c3c', '#f39c12', '#f1c40f'][Math.floor(Math.random() * 3)],
+                life: 1.0
+            });
+        }
+    }
+
+    // 4. 음표 생성
+    function spawnNote() {
+        if (gameOver) return;
+        const x = Math.random() * (canvas.width - 60) + 30;
+        notes.push({
+            x: x,
+            y: 0,
+            radius: 20,
+            speed: 1.8 + Math.random() * 1.2
+        });
+    }
+
+    setInterval(spawnNote, 1200);
+
+    // 5. 마우스/터치 타격 판정 이벤트
+    function handlePointerDown(e) {
+        initAudio();
+        
+        const rect = canvas.getBoundingClientRect();
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+
+        if (gameOver) {
+            // 게임 재시작
+            score = 0;
+            lives = 5;
+            notes = [];
+            particles = [];
+            gameOver = false;
+            gameWon = false;
+            bgmStep = 0;
+            startStravinskyBGM();
+            return;
+        }
+
+        // 음표 직접 타격 검사
+        for (let i = 0; i < notes.length; i++) {
+            let n = notes[i];
+            let dist = Math.hypot(n.x - clickX, n.y - clickY);
+
+            // 마우스/터치 판정 여유 범위 (+25px)
+            if (dist < n.radius + 25) {
+                const targetY = canvas.height - 60;
+                const diffY = Math.abs(n.y - targetY);
+
+                if (diffY < 25) score += 20;       // Perfect
+                else if (diffY < 55) score += 15;  // Great
+                else score += 10;                  // Good
+
+                playHitSound();
+                spawnParticles(n.x, n.y);
+                notes.splice(i, 1);
+                break;
+            }
+        }
+    }
+
+    canvas.addEventListener('pointerdown', handlePointerDown);
+
+    // 6. 원시 부족 배경 및 그래픽 그리기
+    function drawTribalBackground() {
+        // 고대 원시 부족 토템 문양
+        ctx.strokeStyle = 'rgba(142, 68, 173, 0.15)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.arc(canvas.width / 2, canvas.height / 2, 90, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.strokeStyle = 'rgba(211, 84, 0, 0.15)';
+        ctx.beginPath();
+        ctx.moveTo(canvas.width / 2 - 90, canvas.height / 2);
+        ctx.lineTo(canvas.width / 2 + 90, canvas.height / 2);
+        ctx.moveTo(canvas.width / 2, canvas.height / 2 - 90);
+        ctx.lineTo(canvas.width / 2, canvas.height / 2 + 90);
+        ctx.stroke();
+
+        // 좌우 토템 기둥
+        ctx.fillStyle = 'rgba(44, 62, 80, 0.3)';
+        ctx.fillRect(0, 0, 18, canvas.height);
+        ctx.fillRect(canvas.width - 18, 0, 18, canvas.height);
+    }
+
+    // 7. 메인 게임 루프 (Render)
+    function update() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 원시 테마 배경
+        drawTribalBackground();
+
+        // 의식의 불꽃 타겟 라인
+        const targetY = canvas.height - 60;
+        ctx.strokeStyle = '#e74c3c';
+        ctx.lineWidth = 4;
+        ctx.shadowBlur = 10;
+        ctx.shadowColor = '#e74c3c';
+        ctx.beginPath();
+        ctx.moveTo(18, targetY);
+        ctx.lineTo(canvas.width - 18, targetY);
+        ctx.stroke();
+        ctx.shadowBlur = 0; // 그림자 초기화
+
+        // UI 정보 (점수 & 목숨)
+        ctx.fillStyle = '#f39c12';
+        ctx.font = 'bold 16px Arial';
+        ctx.textAlign = 'left';
+        ctx.fillText(`달성: ${score} / 100`, 22, 30);
+
+        ctx.fillStyle = '#e74c3c';
+        ctx.textAlign = 'right';
+        ctx.fillText(`부족 목숨: ${'❤'.repeat(lives)}`, canvas.width - 22, 30);
+
+        // 승리 조건 체크 (100점 달성 시)
+        if (score >= 100 && !gameOver) {
+            gameOver = true;
+            gameWon = true;
+            playFanfare();
+        }
+
+        // 승리 및 게임 오버 모달
+        if (gameOver) {
+            ctx.fillStyle = 'rgba(10, 5, 2, 0.92)';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            ctx.textAlign = 'center';
+
+            if (gameWon) {
+                ctx.fillStyle = '#2ecc71';
+                ctx.font = 'bold 22px Arial';
+                ctx.fillText("🎉 원시 의식 완수!", canvas.width / 2, canvas.height / 2 - 40);
+
+                ctx.fillStyle = '#f1c40f';
+                ctx.font = 'bold 16px Arial';
+                ctx.fillText("ZEP으로 돌아가", canvas.width / 2, canvas.height / 2 + 10);
+                
+                ctx.fillStyle = '#ffffff';
+                ctx.font = 'bold 18px Arial';
+                ctx.fillText("'Ars Nova(아르스 노바)'를 입력하시오", canvas.width / 2, canvas.height / 2 + 40);
+            } else {
+                ctx.fillStyle = '#e74c3c';
+                ctx.font = 'bold 26px Arial';
+                ctx.fillText("💥 제의 실패", canvas.width / 2, canvas.height / 2 - 20);
+                ctx.fillStyle = '#bdc3c7';
+                ctx.font = '15px Arial';
+                ctx.fillText("부족의 목숨을 다 잃었습니다.", canvas.width / 2, canvas.height / 2 + 20);
+            }
+
+            ctx.fillStyle = '#e67e22';
+            ctx.font = '13px Arial';
+            ctx.fillText("화면을 다시 클릭하면 재시작합니다", canvas.width / 2, canvas.height - 40);
+            return;
+        }
+
+        // 파티클 업데이트
+        for (let i = 0; i < particles.length; i++) {
+            let p = particles[i];
+            p.x += p.vx;
+            p.y += p.vy;
+            p.life -= 0.04;
+
+            if (p.life <= 0) {
+                particles.splice(i, 1);
+                i--;
+                continue;
+            }
+
+            ctx.fillStyle = p.color;
+            ctx.globalAlpha = p.life;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 4, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1.0;
+        }
+
+        // 음표 (토템 문양 음표) 이동 및 그리기
+        for (let i = 0; i < notes.length; i++) {
+            let n = notes[i];
+            n.y += n.speed;
+
+            // 음표 원형
+            ctx.fillStyle = '#f1c40f';
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, n.radius, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 음표 외곽선 및 내부 토템 마크
+            ctx.strokeStyle = '#d35400';
+            ctx.lineWidth = 3;
+            ctx.stroke();
+
+            ctx.fillStyle = '#8e44ad';
+            ctx.beginPath();
+            ctx.arc(n.x, n.y, 7, 0, Math.PI * 2);
+            ctx.fill();
+
+            // 놓쳤을 때 (Miss)
+            if (n.y > canvas.height) {
+                notes.splice(i, 1);
+                i--;
+                lives--;
+                playMissSound();
+
+                if (lives <= 0) {
+                    gameOver = true;
+                }
+            }
+        }
+
+        requestAnimationFrame(update);
+    }
+
+    update();
+</script>
+</body>
+</html>
